@@ -1,23 +1,46 @@
 import os
 import json
 import re
+import urllib.parse
 import requests
 import feedparser
 from bs4 import BeautifulSoup
 
-# Cloud-Friendly Verified Aggregator Feeds (Never blocked by Cloudflare)
+# Verified Tamil Nadu News RSS Sources
 RSS_FEEDS = [
-    ("https://google.com", "Google News Tamil"),
-    ("https://bing.com", "Bing News Tamil")
+    ("https://feedburner.com", "Hindu Tamil Thisai"),
+    ("https://dinamani.com", "Dinamani"),
+    ("https://oneindia.com", "Oneindia Tamil"),
+    ("https://google.com", "Google News Tamil")
 ]
 
 HISTORY_FILE = "posted_urls.json"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "ta,en-US;q=0.9,en;q=0.8"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 }
+
+def fetch_url_smart(url):
+    """Tries direct fetch first, then falls back to free open-source proxy if blocked by cloud IP."""
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=15)
+        if res.status_code == 200 and len(res.text) > 500 and "<rss" in res.text.lower() or "<html" in res.text.lower():
+            # Check if it's not a Cloudflare block page
+            if "just a moment..." not in res.text.lower() and "cf-browser-verification" not in res.text.lower():
+                return res.text
+    except Exception:
+        pass
+
+    # Fallback: Free open-source AllOrigins proxy (Bypasses GitHub Actions IP blocks)
+    try:
+        encoded = urllib.parse.quote(url, safe="")
+        proxy_url = f"https://allorigins.win{encoded}"
+        res = requests.get(proxy_url, headers=HEADERS, timeout=25)
+        if res.status_code == 200 and len(res.text) > 300:
+            return res.text
+    except Exception as e:
+        print(f"Proxy note for {url}: {e}")
+    return ""
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
@@ -66,42 +89,45 @@ def detect_labels(title, body):
                 break
     return list(dict.fromkeys(labels))[:5]
 
-def resolve_real_url(url):
-    try:
-        if "://bing.com" in url and "url=" in url:
-            from urllib.parse import urlparse, parse_qs, unquote
-            parsed = parse_qs(urlparse(url).query)
-            if "url" in parsed:
-                return unquote(parsed["url"])
-        res = requests.get(url, headers=HEADERS, timeout=15, allow_redirects=True)
-        return res.url
-    except:
-        return url
-
-def extract_full_article(url):
+def extract_full_article(entry, url):
     image_url = ""
     paragraphs = []
 
-    try:
-        res = requests.get(url, headers=HEADERS, timeout=20)
-        if res.status_code == 200:
-            soup = BeautifulSoup(res.text, "html.parser")
-            
+    if "media_content" in entry and len(entry.media_content) > 0:
+        image_url = entry.media_content.get("url", "")
+    elif "media_thumbnail" in entry and len(entry.media_thumbnail) > 0:
+        image_url = entry.media_thumbnail.get("url", "")
+
+    html_text = fetch_url_smart(url)
+    if html_text:
+        soup = BeautifulSoup(html_text, "html.parser")
+        if not image_url:
             og_img = soup.find("meta", property="og:image")
             if og_img and og_img.get("content"):
                 img = og_img["content"].strip()
                 if img.startswith("http") and "google" not in img.lower():
                     image_url = img
 
-            for p in soup.find_all("p"):
-                txt = p.get_text(" ", strip=True)
-                if len(txt) > 55 and re.search(r'[\u0B80-\u0BFF]', txt):
-                    junk = ["read also", "மேலும் படிக்க", "subscribe", "whatsapp", "telegram", "copyright", "all rights reserved", "follow us", "advertisement", "cookies"]
-                    if not any(j in txt.lower() for j in junk):
-                        if txt not in paragraphs:
-                            paragraphs.append(txt)
-    except Exception as e:
-        print(f"Fetch error: {e}")
+        for p in soup.find_all("p"):
+            txt = p.get_text(" ", strip=True)
+            if len(txt) > 50 and re.search(r'[\u0B80-\u0BFF]', txt):
+                junk = ["read also", "மேலும் படிக்க", "subscribe", "whatsapp", "telegram", "copyright", "all rights reserved", "follow us", "advertisement", "cookies"]
+                if not any(j in txt.lower() for j in junk):
+                    if txt not in paragraphs:
+                        paragraphs.append(txt)
+
+    # Fallback to RSS summary if needed
+    if len(paragraphs) < 2:
+        summary_html = entry.get("summary", "") or entry.get("description", "")
+        if summary_html:
+            soup_sum = BeautifulSoup(summary_html, "html.parser")
+            if not image_url:
+                img_tag = soup_sum.find("img")
+                if img_tag and img_tag.get("src"):
+                    image_url = img_tag["src"].strip()
+            sum_txt = soup_sum.get_text(" ", strip=True)
+            if len(sum_txt) > 40 and re.search(r'[\u0B80-\u0BFF]', sum_txt):
+                paragraphs.append(sum_txt)
 
     return image_url, paragraphs[:8]
 
@@ -127,75 +153,68 @@ def main():
     history = load_history()
     posted_something = False
 
-    for feed_url, feed_name in RSS_FEEDS:
+    tn_keywords = ["தமிழ்நாடு", "தமிழகம்", "சென்னை", "மதுரை", "கோவை", "திருச்சி", "சேலம்", "நெல்லை", "ஸ்டாலின்", "திமுக", "அதிமுக", "விஜய்", "பாஜக", "வேலூர்", "தஞ்சை", "ஈரோடு", "கன்னியாகுமரி", "தூத்துக்குடி", "புதுச்சேரி"]
+
+    for feed_url, source_name in RSS_FEEDS:
         if posted_something:
             break
-        print(f"Checking: {feed_name}")
-        try:
-            rss_res = requests.get(feed_url, headers=HEADERS, timeout=20)
-            feed = feedparser.parse(rss_res.content)
-            print(f"Found {len(feed.entries)} entries in {feed_name}")
+        print(f"Fetching feed: {source_name}")
+        xml_data = fetch_url_smart(feed_url)
+        if not xml_data:
+            print(f"Could not load XML for {source_name}")
+            continue
 
-            for entry in feed.entries[:20]:
-                raw_link = entry.get("link", "").strip()
-                raw_title = entry.get("title", "").strip()
+        feed = feedparser.parse(xml_data)
+        print(f"Found {len(feed.entries)} entries in {source_name}")
 
-                if not raw_link or not raw_title:
-                    continue
+        for entry in feed.entries[:15]:
+            link = entry.get("link", "").strip()
+            raw_title = entry.get("title", "").strip()
 
-                # Clean publisher suffix from title (e.g., "Headline - Dinamalar")
-                if " - " in raw_title:
-                    parts = raw_title.rsplit(" - ", 1)
-                    title = parts[0].strip()
-                    publisher = parts[1].strip()
-                else:
-                    title = raw_title
-                    publisher = entry.get("source", {}).get("title", "Tamil News")
+            if not link or not raw_title or link in history:
+                continue
 
-                if not re.search(r'[\u0B80-\u0BFF]', title):
-                    continue
+            title = raw_title.rsplit(" - ", 1).strip() if " - " in raw_title else raw_title
+            if not re.search(r'[\u0B80-\u0BFF]', title):
+                continue
 
-                real_url = resolve_real_url(raw_link)
-                if real_url in history or title in history:
-                    continue
+            summary_txt = entry.get("summary", "")
+            if not any(k in (title + " " + summary_txt) for k in tn_keywords):
+                continue
 
-                print(f"Trying: {title} ({publisher})")
-                image_url, paragraphs = extract_full_article(real_url)
+            print(f"Extracting article: {title}")
+            image_url, paragraphs = extract_full_article(entry, link)
 
-                if not image_url or len(paragraphs) < 2:
-                    print(f"Skipping (img={bool(image_url)}, paras={len(paragraphs)})")
-                    continue
+            if not image_url or len(paragraphs) < 1:
+                print(f"Skipping (img={bool(image_url)}, paras={len(paragraphs)})")
+                continue
 
-                body_html = "".join([f"<p style='font-size:16px; line-height:1.8; margin-bottom:15px;'>{p}</p>" for p in paragraphs])
-                
-                full_html = f"""
-                <div style="text-align:center; margin-bottom:20px;">
-                    <img src="{image_url}" alt="{title}" style="max-width:100%; height:auto; border-radius:8px;" />
-                </div>
-                {body_html}
-                <hr style="margin:25px 0; border:0; border-top:1px solid #ddd;" />
-                <p style="font-size:14px; color:#555;">
-                    <strong>செய்தி மூலம் (Original Source):</strong> 
-                    <a href="{real_url}" target="_blank" rel="nofollow noopener">{publisher} - முழு செய்தியைப் படிக்க</a>
-                </p>
-                """
+            body_html = "".join([f"<p style='font-size:16px; line-height:1.8; margin-bottom:15px;'>{p}</p>" for p in paragraphs])
+            
+            full_html = f"""
+            <div style="text-align:center; margin-bottom:20px;">
+                <img src="{image_url}" alt="{title}" style="max-width:100%; height:auto; border-radius:8px;" />
+            </div>
+            {body_html}
+            <hr style="margin:25px 0; border:0; border-top:1px solid #ddd;" />
+            <p style="font-size:14px; color:#555;">
+                <strong>செய்தி மூலம் (Original Source):</strong> 
+                <a href="{link}" target="_blank" rel="nofollow noopener">{source_name} - முழு செய்தியைப் படிக்க</a>
+            </p>
+            """
 
-                labels = detect_labels(title, " ".join(paragraphs))
-                token = get_access_token()
-                post_url = publish_to_blogger(token, title, full_html, labels)
+            labels = detect_labels(title, " ".join(paragraphs))
+            token = get_access_token()
+            post_url = publish_to_blogger(token, title, full_html, labels)
 
-                print(f"SUCCESS! Published to DINADESAM: {post_url}")
-                history.append(real_url)
-                history.append(title)
-                save_history(history)
-                posted_something = True
-                break
-
-        except Exception as e:
-            print(f"Error with {feed_name}: {e}")
+            print(f"SUCCESS! Published to DINADESAM: {post_url}")
+            history.append(link)
+            save_history(history)
+            posted_something = True
+            break
 
     if not posted_something:
-        print("No valid article published in this run.")
+        print("No new valid Tamil Nadu article found in this run.")
 
 if __name__ == "__main__":
     main()
