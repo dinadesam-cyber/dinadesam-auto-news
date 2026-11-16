@@ -1,14 +1,15 @@
 import os
 import json
-import time
 import re
 import requests
 import feedparser
 from bs4 import BeautifulSoup
 
-# Verified Tamil Nadu RSS Feeds
+# Verified Tamil News RSS Feeds (Friendly to cloud servers)
 RSS_FEEDS = [
-    ("https://news18.com", "News18 Tamil Nadu"),
+    ("https://dinamani.com", "Dinamani"),
+    ("https://hindutamil.in", "Hindu Tamil Thisai"),
+    ("https://bbci.co.uk", "BBC News Tamil"),
     ("https://oneindia.com", "Oneindia Tamil")
 ]
 
@@ -24,7 +25,6 @@ def load_history():
     return []
 
 def save_history(history):
-    # Keep last 500 URLs to prevent file bloat
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(history[-500:], f, ensure_ascii=False, indent=2)
 
@@ -62,30 +62,51 @@ def detect_labels(title, body):
                 break
     return list(dict.fromkeys(labels))[:5]
 
-def extract_full_article(url):
+def extract_article_data(entry, url):
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "ta,en-US;q=0.9,en;q=0.8"
     }
-    res = requests.get(url, headers=headers, timeout=20)
-    res.raise_for_status()
-    soup = BeautifulSoup(res.text, "html.parser")
-
-    # 1. Extract Featured Image (og:image)
+    
     image_url = ""
-    og_img = soup.find("meta", property="og:image")
-    if og_img and og_img.get("content"):
-        image_url = og_img["content"].strip()
-
-    # 2. Extract Meaningful Tamil Paragraphs
     paragraphs = []
-    for p in soup.find_all("p"):
-        txt = p.get_text(" ", strip=True)
-        # Filter out short UI/menu text and ensure Tamil script is present
-        if len(txt) > 65 and re.search(r'[\u0B80-\u0BFF]', txt):
-            junk_words = ["read also", "மேலும் படிக்க", "subscribe", "whatsapp", "telegram", "copyright", "all rights reserved", "follow us"]
-            if not any(jw in txt.lower() for jw in junk_words):
-                if txt not in paragraphs:
-                    paragraphs.append(txt)
+
+    # Check RSS media/enclosure for image first
+    if "media_content" in entry and len(entry.media_content) > 0:
+        image_url = entry.media_content[0].get("url", "")
+    elif "media_thumbnail" in entry and len(entry.media_thumbnail) > 0:
+        image_url = entry.media_thumbnail[0].get("url", "")
+
+    # Fetch full webpage
+    try:
+        res = requests.get(url, headers=headers, timeout=20)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, "html.parser")
+            
+            if not image_url:
+                og_img = soup.find("meta", property="og:image")
+                if og_img and og_img.get("content"):
+                    image_url = og_img["content"].strip()
+
+            for p in soup.find_all("p"):
+                txt = p.get_text(" ", strip=True)
+                if len(txt) > 50 and re.search(r'[\u0B80-\u0BFF]', txt):
+                    junk_words = ["read also", "மேலும் படிக்க", "subscribe", "whatsapp", "telegram", "copyright", "all rights reserved", "follow us", "advertisement"]
+                    if not any(jw in txt.lower() for jw in junk_words):
+                        if txt not in paragraphs:
+                            paragraphs.append(txt)
+    except Exception as e:
+        print(f"Page fetch note: {e}")
+
+    # Fallback: If site blocks full page scrape, check if RSS itself has full content
+    if len(paragraphs) < 2 and "content" in entry:
+        raw_html = entry.content[0].get("value", "")
+        soup_rss = BeautifulSoup(raw_html, "html.parser")
+        for p in soup_rss.find_all("p"):
+            txt = p.get_text(" ", strip=True)
+            if len(txt) > 40 and re.search(r'[\u0B80-\u0BFF]', txt):
+                paragraphs.append(txt)
 
     return image_url, paragraphs[:8]
 
@@ -111,11 +132,16 @@ def main():
     history = load_history()
     posted_something = False
 
+    # Tamil Nadu filter for general feeds like BBC Tamil
+    tn_keywords = ["தமிழ்நாடு", "தமிழகம்", "சென்னை", "மதுரை", "கோவை", "திருச்சி", "சேலம்", "நெல்லை", "ஸ்டாலின்", "திமுக", "அதிமுக", "விஜய்", "பாஜக", "வேலூர்", "தஞ்சை", "ஈரோடு"]
+
     for feed_url, source_name in RSS_FEEDS:
         if posted_something:
             break
+        print(f"Checking feed: {source_name}")
         try:
             feed = feedparser.parse(feed_url)
+            print(f"Found {len(feed.entries)} entries in {source_name}")
             for entry in feed.entries[:10]:
                 link = entry.get("link", "").strip()
                 title = entry.get("title", "").strip()
@@ -123,16 +149,20 @@ def main():
                 if not link or not title or link in history:
                     continue
 
-                # Ensure title has Tamil characters
                 if not re.search(r'[\u0B80-\u0BFF]', title):
                     continue
 
-                print(f"Checking article: {title}")
-                image_url, paragraphs = extract_full_article(link)
+                # For BBC Tamil, ensure news is related to Tamil Nadu
+                if "BBC" in source_name:
+                    summary_txt = entry.get("summary", "")
+                    if not any(k in (title + " " + summary_txt) for k in tn_keywords):
+                        continue
 
-                # Require both a valid image and at least 3 meaningful paragraphs
-                if not image_url or len(paragraphs) < 3:
-                    print("Skipping: Incomplete content or missing image.")
+                print(f"Extracting: {title}")
+                image_url, paragraphs = extract_article_data(entry, link)
+
+                if not image_url or len(paragraphs) < 2:
+                    print(f"Skipping (img={bool(image_url)}, paras={len(paragraphs)})")
                     continue
 
                 body_html = "".join([f"<p style='font-size:16px; line-height:1.8; margin-bottom:15px;'>{p}</p>" for p in paragraphs])
