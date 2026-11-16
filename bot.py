@@ -5,15 +5,21 @@ import requests
 import feedparser
 from bs4 import BeautifulSoup
 
-# Verified Tamil News RSS Feeds (Friendly to cloud servers)
+# Verified Tamil News RSS Feeds
 RSS_FEEDS = [
+    ("https://bbci.co.uk", "BBC News Tamil"),
     ("https://dinamani.com", "Dinamani"),
     ("https://hindutamil.in", "Hindu Tamil Thisai"),
-    ("https://bbci.co.uk", "BBC News Tamil"),
     ("https://oneindia.com", "Oneindia Tamil")
 ]
 
 HISTORY_FILE = "posted_urls.json"
+
+BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "ta,en-US;q=0.9,en;q=0.8"
+}
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
@@ -63,24 +69,16 @@ def detect_labels(title, body):
     return list(dict.fromkeys(labels))[:5]
 
 def extract_article_data(entry, url):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "ta,en-US;q=0.9,en;q=0.8"
-    }
-    
     image_url = ""
     paragraphs = []
 
-    # Check RSS media/enclosure for image first
     if "media_content" in entry and len(entry.media_content) > 0:
-        image_url = entry.media_content[0].get("url", "")
+        image_url = entry.media_content.get("url", "")
     elif "media_thumbnail" in entry and len(entry.media_thumbnail) > 0:
-        image_url = entry.media_thumbnail[0].get("url", "")
+        image_url = entry.media_thumbnail.get("url", "")
 
-    # Fetch full webpage
     try:
-        res = requests.get(url, headers=headers, timeout=20)
+        res = requests.get(url, headers=BROWSER_HEADERS, timeout=20)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, "html.parser")
             
@@ -92,16 +90,15 @@ def extract_article_data(entry, url):
             for p in soup.find_all("p"):
                 txt = p.get_text(" ", strip=True)
                 if len(txt) > 50 and re.search(r'[\u0B80-\u0BFF]', txt):
-                    junk_words = ["read also", "மேலும் படிக்க", "subscribe", "whatsapp", "telegram", "copyright", "all rights reserved", "follow us", "advertisement"]
+                    junk_words = ["read also", "மேலும் படிக்க", "subscribe", "whatsapp", "telegram", "copyright", "all rights reserved", "follow us", "advertisement", "bbc news, தமிழ்"]
                     if not any(jw in txt.lower() for jw in junk_words):
                         if txt not in paragraphs:
                             paragraphs.append(txt)
     except Exception as e:
         print(f"Page fetch note: {e}")
 
-    # Fallback: If site blocks full page scrape, check if RSS itself has full content
     if len(paragraphs) < 2 and "content" in entry:
-        raw_html = entry.content[0].get("value", "")
+        raw_html = entry.content.get("value", "")
         soup_rss = BeautifulSoup(raw_html, "html.parser")
         for p in soup_rss.find_all("p"):
             txt = p.get_text(" ", strip=True)
@@ -132,17 +129,18 @@ def main():
     history = load_history()
     posted_something = False
 
-    # Tamil Nadu filter for general feeds like BBC Tamil
-    tn_keywords = ["தமிழ்நாடு", "தமிழகம்", "சென்னை", "மதுரை", "கோவை", "திருச்சி", "சேலம்", "நெல்லை", "ஸ்டாலின்", "திமுக", "அதிமுக", "விஜய்", "பாஜக", "வேலூர்", "தஞ்சை", "ஈரோடு"]
+    tn_keywords = ["தமிழ்நாடு", "தமிழகம்", "சென்னை", "மதுரை", "கோவை", "திருச்சி", "சேலம்", "நெல்லை", "ஸ்டாலின்", "திமுக", "அதிமுக", "விஜய்", "பாஜக", "வேலூர்", "தஞ்சை", "ஈரோடு", "கன்னியாகுமரி", "தூத்துக்குடி"]
 
     for feed_url, source_name in RSS_FEEDS:
         if posted_something:
             break
         print(f"Checking feed: {source_name}")
         try:
-            feed = feedparser.parse(feed_url)
+            rss_res = requests.get(feed_url, headers=BROWSER_HEADERS, timeout=20)
+            feed = feedparser.parse(rss_res.content)
             print(f"Found {len(feed.entries)} entries in {source_name}")
-            for entry in feed.entries[:10]:
+            
+            for entry in feed.entries[:15]:
                 link = entry.get("link", "").strip()
                 title = entry.get("title", "").strip()
 
@@ -152,7 +150,6 @@ def main():
                 if not re.search(r'[\u0B80-\u0BFF]', title):
                     continue
 
-                # For BBC Tamil, ensure news is related to Tamil Nadu
                 if "BBC" in source_name:
                     summary_txt = entry.get("summary", "")
                     if not any(k in (title + " " + summary_txt) for k in tn_keywords):
