@@ -1,0 +1,43 @@
+name: DINADESAM Auto Tamil News
+
+on:
+  schedule:
+    # Runs automatically every 2 hours
+    - cron: '0 */2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish-news:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install required libraries
+        run: |
+          pip install requests feedparser beautifulsoup4
+
+      - name: Run DINADESAM News Bot
+        env:
+          BLOG_ID: ${{ secrets.BLOG_ID }}
+          CLIENT_ID: ${{ secrets.CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.REFRESH_TOKEN }}
+        run: |
+          python bot.py
+
+      - name: Save posted history to avoid duplicates
+        run: |
+          git config --global user.name "DINADESAM Bot"
+          git config --global user.email "bot@://github.com"
+          git add posted_urls.json
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update posted news history" && git push)
