@@ -5,9 +5,10 @@ from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup
 
+# URLs built in parts so browser extensions cannot strip paths
 TN_SOURCES = [
-    ("https://dinamalar.com", "Dinamalar"),
-    ("https://dailythanthi.com", "Daily Thanthi")
+    ("https://" + "www.dinamalar.com" + "/news/tamil-nadu-news", "Dinamalar"),
+    ("https://" + "www.dailythanthi.com" + "/news/state", "Daily Thanthi")
 ]
 
 HISTORY_FILE = "posted_urls.json"
@@ -32,7 +33,7 @@ def save_history(history):
         json.dump(history[-500:], f, ensure_ascii=False, indent=2)
 
 def get_access_token():
-    url = "https://googleapis.com"
+    url = "https://" + "oauth2.googleapis.com" + "/token"
     data = {
         "client_id": os.environ["CLIENT_ID"].strip(),
         "client_secret": os.environ["CLIENT_SECRET"].strip(),
@@ -121,7 +122,7 @@ def extract_full_article(article_url):
 
 def publish_to_blogger(token, title, html_content, labels):
     blog_id = os.environ["BLOG_ID"].strip()
-    api_url = f"https://googleapis.com{blog_id}/posts/"
+    api_url = "https://" + "www.googleapis.com" + f"/blogger/v3/blogs/{blog_id}/posts/"
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
