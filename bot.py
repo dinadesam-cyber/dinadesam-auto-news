@@ -48,7 +48,7 @@ def get_access_token():
 
 def detect_labels(title, body):
     text = (title + " " + body).lower()
-    labels = ["Tamil Nadu", "தமிழ்நாடு"]
+    labels = ["Featured","Tamil Nadu", "தமிழ்நாடு"]
     
     keywords = {
         "Chennai": ["சென்னை", "chennai"],
