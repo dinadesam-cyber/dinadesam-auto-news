@@ -23,7 +23,7 @@ jobs:
 
       - name: Install required libraries
         run: |
-          pip install requests feedparser beautifulsoup4
+          pip install requests beautifulsoup4
 
       - name: Run DINADESAM News Bot
         env:
@@ -34,11 +34,13 @@ jobs:
         run: |
           python bot.py
 
-      - name: Save posted history to avoid duplicates
+      - name: Keep repository active & save history
         run: |
+          date -u > keepalive.txt
+          git config --global user.name "DINADESAM Bot"
+          git config --global user.email "bot@://github.com"
+          git add keepalive.txt
           if [ -f posted_urls.json ]; then
-            git config --global user.name "DINADESAM Bot"
-            git config --global user.email "bot@://github.com"
             git add posted_urls.json
-            git diff --quiet && git diff --staged --quiet || (git commit -m "Update posted news history" && git push)
           fi
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto update & keep workflow active" && git push)
