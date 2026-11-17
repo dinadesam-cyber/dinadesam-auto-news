@@ -5,11 +5,9 @@ from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup
 
-# Direct Tamil Nadu Section Pages (Verified HTTP 200 on GitHub Actions)
 TN_SOURCES = [
     ("https://dinamalar.com", "Dinamalar"),
-    ("https://dailythanthi.com", "Daily Thanthi"),
-    ("https://oneindia.com", "Oneindia Tamil")
+    ("https://dailythanthi.com", "Daily Thanthi")
 ]
 
 HISTORY_FILE = "posted_urls.json"
@@ -42,6 +40,8 @@ def get_access_token():
         "grant_type": "refresh_token"
     }
     res = requests.post(url, data=data, timeout=20)
+    if res.status_code != 200:
+        print(f"TOKEN ERROR: {res.text}")
     res.raise_for_status()
     return res.json()["access_token"]
 
@@ -79,10 +79,9 @@ def get_article_links(section_url):
         txt = a.get_text(" ", strip=True)
         full_url = urljoin(section_url, href)
         
-        # Must contain Tamil headline text and look like a specific news article URL
         if len(txt) > 25 and re.search(r'[\u0B80-\u0BFF]', txt):
             if any(char.isdigit() for char in full_url) and full_url.startswith("http"):
-                if full_url not in links:
+                if "/english/" not in full_url.lower() and full_url not in links:
                     links.append(full_url)
     return links[:15]
 
@@ -93,7 +92,6 @@ def extract_full_article(article_url):
     
     soup = BeautifulSoup(res.text, "html.parser")
     
-    # Extract Title
     title = ""
     h1 = soup.find("h1")
     if h1:
@@ -103,7 +101,6 @@ def extract_full_article(article_url):
         if og_title and og_title.get("content"):
             title = og_title["content"].strip()
 
-    # Extract Image
     image_url = ""
     og_img = soup.find("meta", property="og:image")
     if og_img and og_img.get("content"):
@@ -111,7 +108,6 @@ def extract_full_article(article_url):
         if img.startswith("http"):
             image_url = img
 
-    # Extract Full Tamil Paragraphs
     paragraphs = []
     for p in soup.find_all("p"):
         txt = p.get_text(" ", strip=True)
@@ -138,6 +134,8 @@ def publish_to_blogger(token, title, html_content, labels):
         "labels": labels
     }
     res = requests.post(api_url, headers=headers, json=payload, timeout=25)
+    if res.status_code not in (200, 201):
+        print(f"BLOGGER ERROR ({res.status_code}): {res.text}")
     res.raise_for_status()
     return res.json().get("url")
 
@@ -148,28 +146,20 @@ def main():
     for section_url, source_name in TN_SOURCES:
         if posted_something:
             break
-        print(f"Scanning Tamil Nadu news from: {source_name}")
+        print(f"Scanning: {source_name}")
         try:
             article_links = get_article_links(section_url)
-            print(f"Found {len(article_links)} article links on {source_name}")
-
             for link in article_links:
                 if link in history:
                     continue
 
-                print(f"Checking article: {link}")
                 title, image_url, paragraphs = extract_full_article(link)
-
-                if not title or not re.search(r'[\u0B80-\u0BFF]', title):
-                    continue
-                if title in history:
+                if not title or not re.search(r'[\u0B80-\u0BFF]', title) or title in history:
                     continue
                 if not image_url or len(paragraphs) < 2:
-                    print(f"Skipping (img={bool(image_url)}, paras={len(paragraphs)})")
                     continue
 
                 body_html = "".join([f"<p style='font-size:16px; line-height:1.8; margin-bottom:15px;'>{p}</p>" for p in paragraphs])
-                
                 full_html = f"""
                 <div style="text-align:center; margin-bottom:20px;">
                     <img src="{image_url}" alt="{title}" style="max-width:100%; height:auto; border-radius:8px;" />
@@ -186,7 +176,7 @@ def main():
                 token = get_access_token()
                 post_url = publish_to_blogger(token, title, full_html, labels)
 
-                print(f"SUCCESS! Published to DINADESAM: {post_url}")
+                print(f"SUCCESS! Published: {post_url}")
                 history.append(link)
                 history.append(title)
                 save_history(history)
@@ -194,10 +184,10 @@ def main():
                 break
 
         except Exception as e:
-            print(f"Error with {source_name}: {e}")
+            print(f"Error ({source_name}): {e}")
 
     if not posted_something:
-        print("No new valid Tamil Nadu article found in this run.")
+        print("No new valid article posted.")
 
 if __name__ == "__main__":
     main()
